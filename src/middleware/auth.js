@@ -1,3 +1,5 @@
+// src/middleware/auth.js
+
 const jwt = require('jsonwebtoken');
 
 const authenticateToken = (req, res, next) => {
@@ -15,13 +17,43 @@ const authenticateToken = (req, res, next) => {
             });
         }
 
-        const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
-        console.log('✅ Token verified - User ID:', decoded.userId);
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        console.log('✅ Token verified - User ID:', decoded.id);
+        console.log('✅ Token data:', {
+            id: decoded.id,
+            email: decoded.email,
+            role: decoded.role,
+            isSuperAdmin: decoded.isSuperAdmin
+        });
         
-        req.user = decoded;
+        // ✅ FIXED: Set req.user with correct fields
+        req.user = {
+            id: decoded.id,  // ✅ Use 'id' (matches JWT creation)
+            userId: decoded.id,  // ✅ Also set userId for backward compatibility
+            tenantId: decoded.tenantId,
+            email: decoded.email,
+            role: decoded.role,
+            isSuperAdmin: decoded.isSuperAdmin || false
+        };
+        
         next();
     } catch (error) {
         console.error('❌ Auth middleware error:', error.message);
+        
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({
+                success: false,
+                message: 'Token expired'
+            });
+        }
+        
+        if (error.name === 'JsonWebTokenError') {
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid token'
+            });
+        }
+        
         return res.status(403).json({
             success: false,
             message: 'Invalid or expired token'
