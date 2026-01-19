@@ -17,26 +17,40 @@ const authenticateToken = (req, res, next) => {
             });
         }
 
+        // Verify token
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        
+        // ✅ FIXED: Use 'id' not 'userId' (matches JWT creation)
         console.log('✅ Token verified - User ID:', decoded.id);
-        console.log('✅ Token data:', {
+        console.log('✅ Token payload:', {
             id: decoded.id,
             email: decoded.email,
             role: decoded.role,
-            isSuperAdmin: decoded.isSuperAdmin
+            tenantId: decoded.tenantId
         });
-        
-        // ✅ FIXED: Set req.user with correct fields
+
+        // ✅ FIXED: Set req.user with correct field names
         req.user = {
-            id: decoded.id,  // ✅ Use 'id' (matches JWT creation)
-            userId: decoded.id,  // ✅ Also set userId for backward compatibility
+            id: decoded.id,           // ✅ Primary ID
+            userId: decoded.id,       // ✅ Alias for backward compatibility
             tenantId: decoded.tenantId,
             email: decoded.email,
             role: decoded.role,
             isSuperAdmin: decoded.isSuperAdmin || false
         };
-        
+
+        // Validate ID exists
+        if (!req.user.id) {
+            console.error('❌ CRITICAL: Token has no user ID!');
+            return res.status(401).json({
+                success: false,
+                message: 'Invalid token - no user ID'
+            });
+        }
+
+        console.log('✅ Auth middleware passed - User:', req.user.email);
         next();
+
     } catch (error) {
         console.error('❌ Auth middleware error:', error.message);
         
@@ -56,7 +70,7 @@ const authenticateToken = (req, res, next) => {
         
         return res.status(403).json({
             success: false,
-            message: 'Invalid or expired token'
+            message: 'Token verification failed'
         });
     }
 };
