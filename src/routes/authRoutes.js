@@ -136,12 +136,16 @@ router.post('/login', async (req, res) => {
         }
 
         const user = await User.findOne({ email: email.toLowerCase() });
+        
         if (!user) {
+            console.log('❌ User not found:', email);
             return res.status(401).json({
                 success: false,
                 message: 'Invalid credentials'
             });
         }
+
+        console.log('✅ User found:', user.email, 'ID:', user._id); // ← DEBUG LOG
 
         if (!user.isActive) {
             return res.status(401).json({
@@ -152,6 +156,7 @@ router.post('/login', async (req, res) => {
 
         const isPasswordValid = await bcrypt.compare(password, user.password);
         if (!isPasswordValid) {
+            console.log('❌ Invalid password for:', email);
             return res.status(401).json({
                 success: false,
                 message: 'Invalid credentials'
@@ -193,11 +198,25 @@ router.post('/login', async (req, res) => {
         user.lastLogin = new Date();
         await user.save();
 
-        // Generate token (FIXED - use 'id' not 'userId')
+        // ✅ FIXED: Proper ID handling
+        const userId = user._id ? user._id.toString() : user.id?.toString();
+        const tenantIdStr = user.isSuperAdmin ? 'super_admin_tenant' : (tenant._id ? tenant._id.toString() : 'unknown');
+
+        console.log('🔑 Creating token with:', { userId, tenantIdStr }); // ← DEBUG LOG
+
+        if (!userId) {
+            console.error('❌ CRITICAL: User ID is undefined!', user);
+            return res.status(500).json({
+                success: false,
+                message: 'User ID error'
+            });
+        }
+
+        // Generate token with VERIFIED user ID
         const token = jwt.sign(
             { 
-                id: user._id.toString(),  // ✅ Changed from userId to id
-                tenantId: user.isSuperAdmin ? 'super_admin_tenant' : tenant._id.toString(),
+                id: userId,  // ✅ Properly set
+                tenantId: tenantIdStr,
                 email: user.email,
                 role: user.role,
                 isSuperAdmin: user.isSuperAdmin || false
@@ -206,7 +225,7 @@ router.post('/login', async (req, res) => {
             { expiresIn: '7d' }
         );
 
-        console.log('✅ Login successful:', email);
+        console.log('✅ Login successful:', email, 'Token created');
 
         res.json({
             success: true,
