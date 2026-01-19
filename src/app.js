@@ -5,11 +5,24 @@ require('dotenv').config();
 
 const app = express();
 
-// Middleware
+// ==================== CORS CONFIGURATION ====================
 app.use(cors({
-    origin: process.env.FRONTEND_URL || '*',
-    credentials: true
+    origin: [
+        process.env.FRONTEND_URL,
+        'http://localhost:3000',
+        'http://localhost:5173',
+        'https://whatsapp-saas-frontend.vercel.app',  // Tumhara actual frontend URL
+        /\.vercel\.app$/  // Allow ALL vercel.app domains
+    ].filter(Boolean),  // Remove undefined values
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+// Handle preflight requests
+app.options('*', cors());
+
+// Other Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -127,16 +140,9 @@ console.log('   - GET    /api/health');
 console.log('   - POST   /api/auth/login');
 console.log('   - POST   /api/auth/register');
 console.log('   - GET    /api/billing/subscription');
-console.log('   - GET    /api/contacts');
-console.log('   - GET    /api/messages');
-console.log('   - GET    /api/templates');
-console.log('   - GET    /api/settings');
-console.log('   - GET    /api/users');
-console.log('   - GET    /api/admin');
-console.log('   - GET    /api/analytics');
-console.log('   - POST   /api/webhook');
 
 console.log('\n💡 Razorpay: ' + (process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '⚠️ Not configured'));
+console.log('💡 Frontend URL: ' + (process.env.FRONTEND_URL || 'Not set'));
 
 // ==================== 404 HANDLER ====================
 app.use((req, res) => {
