@@ -5,20 +5,34 @@ const crypto = require('crypto');
 const { authenticateToken } = require('../middleware/auth');
 const Tenant = require('../models/Tenant');
 
-// ==================== RAZORPAY INITIALIZATION ====================
-if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
-    console.error('❌ Razorpay credentials missing in environment variables');
-    console.error('   Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to your .env file');
+// ==================== RAZORPAY INITIALIZATION (SAFE) ====================
+let razorpay = null;
+
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+    razorpay = new Razorpay({
+        key_id: process.env.RAZORPAY_KEY_ID,
+        key_secret: process.env.RAZORPAY_KEY_SECRET
+    });
+    console.log('✅ Razorpay initialized');
+    
+    // Test connection
+    razorpay.orders.all({ count: 1 })
+        .then(() => console.log('✅ Razorpay connected successfully'))
+        .catch(err => console.error('⚠️ Razorpay connection test failed:', err.message));
+} else {
+    console.log('⚠️ Razorpay not configured - payment features disabled');
 }
 
-const razorpay = new Razorpay({
-    key_id: process.env.RAZORPAY_KEY_ID,
-    key_secret: process.env.RAZORPAY_KEY_SECRET
-});
-
-razorpay.orders.all({ count: 1 })
-    .then(() => console.log('✅ Razorpay connected successfully'))
-    .catch(err => console.error('⚠️  Razorpay connection test failed:', err.message));
+// ==================== MIDDLEWARE - CHECK RAZORPAY ====================
+const checkRazorpay = (req, res, next) => {
+    if (!razorpay) {
+        return res.status(503).json({
+            success: false,
+            message: 'Payment service not configured. Please contact admin.'
+        });
+    }
+    next();
+};
 
 // ==================== CONFIGURATION ====================
 const PLANS = {
@@ -108,7 +122,7 @@ router.get('/subscription', authenticateToken, async (req, res) => {
 });
 
 // ==================== CREATE QR CODE FOR PAYMENT ====================
-router.post('/create-qr-payment', authenticateToken, async (req, res) => {
+router.post('/create-qr-payment', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { planId, billingPeriod } = req.body;
         
@@ -142,15 +156,15 @@ router.post('/create-qr-payment', authenticateToken, async (req, res) => {
 
         const tenant = await Tenant.findById(req.user.tenantId);
 
-        // Create QR Code (Fixed version)
+        // Create QR Code
         const qrCode = await razorpay.qrCode.create({
             type: 'upi_qr',
             name: `${plan.name} Plan`,
             usage: 'single_use',
             fixed_amount: true,
-            payment_amount: amount * 100, // in paise
+            payment_amount: amount * 100,
             description: `${plan.name} Plan - ${billingPeriod} - ${tenant.name}`,
-            close_by: Math.floor(Date.now() / 1000) + 900, // 15 minutes from now
+            close_by: Math.floor(Date.now() / 1000) + 900,
             notes: {
                 tenant_id: req.user.tenantId.toString(),
                 tenant_name: tenant.name,
@@ -184,7 +198,7 @@ router.post('/create-qr-payment', authenticateToken, async (req, res) => {
 });
 
 // ==================== CHECK QR PAYMENT STATUS ====================
-router.get('/check-qr-payment/:qrCodeId', authenticateToken, async (req, res) => {
+router.get('/check-qr-payment/:qrCodeId', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { qrCodeId } = req.params;
         
@@ -209,8 +223,8 @@ router.get('/check-qr-payment/:qrCodeId', authenticateToken, async (req, res) =>
     }
 });
 
-// ==================== CREATE PAYMENT LINK (Better Alternative) ====================
-router.post('/create-payment-link', authenticateToken, async (req, res) => {
+// ==================== CREATE PAYMENT LINK ====================
+router.post('/create-payment-link', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { planId, billingPeriod } = req.body;
         
@@ -241,7 +255,6 @@ router.post('/create-payment-link', authenticateToken, async (req, res) => {
 
         const tenant = await Tenant.findById(req.user.tenantId);
 
-        // Create Payment Link
         const paymentLink = await razorpay.paymentLink.create({
             amount: amount * 100,
             currency: 'INR',
@@ -289,7 +302,7 @@ router.post('/create-payment-link', authenticateToken, async (req, res) => {
 });
 
 // ==================== CHECK PAYMENT LINK STATUS ====================
-router.get('/check-payment-link/:linkId', authenticateToken, async (req, res) => {
+router.get('/check-payment-link/:linkId', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { linkId } = req.params;
         
@@ -315,7 +328,7 @@ router.get('/check-payment-link/:linkId', authenticateToken, async (req, res) =>
 });
 
 // ==================== UPGRADE PLAN ====================
-router.post('/upgrade', authenticateToken, async (req, res) => {
+router.post('/upgrade', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { planId, billingPeriod } = req.body;
         
@@ -409,7 +422,7 @@ router.post('/upgrade', authenticateToken, async (req, res) => {
 });
 
 // ==================== CREATE PLAN ORDER ====================
-router.post('/create-plan-order', authenticateToken, async (req, res) => {
+router.post('/create-plan-order', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { planId, billingPeriod } = req.body;
         
@@ -526,6 +539,14 @@ router.post('/verify-plan-payment', authenticateToken, async (req, res) => {
             });
         }
 
+        // Check if Razorpay is configured for signature verification
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(503).json({
+                success: false,
+                message: 'Payment verification not available'
+            });
+        }
+
         const body = razorpay_order_id + "|" + razorpay_payment_id;
         const expectedSignature = crypto
             .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -587,7 +608,7 @@ router.post('/verify-plan-payment', authenticateToken, async (req, res) => {
 });
 
 // ==================== CREATE CREDITS ORDER ====================
-router.post('/create-credits-order', authenticateToken, async (req, res) => {
+router.post('/create-credits-order', authenticateToken, checkRazorpay, async (req, res) => {
     try {
         const { packId } = req.body;
         
@@ -643,6 +664,14 @@ router.post('/verify-credits-payment', authenticateToken, async (req, res) => {
         const { razorpay_order_id, razorpay_payment_id, razorpay_signature, packId } = req.body;
         
         console.log('🔐 Verifying credits payment:', { razorpay_order_id, packId });
+
+        // Check if Razorpay is configured
+        if (!process.env.RAZORPAY_KEY_SECRET) {
+            return res.status(503).json({
+                success: false,
+                message: 'Payment verification not available'
+            });
+        }
 
         const body = razorpay_order_id + "|" + razorpay_payment_id;
         const expectedSignature = crypto
@@ -770,6 +799,22 @@ router.post('/cancel-subscription', authenticateToken, async (req, res) => {
             message: 'Failed to cancel subscription'
         });
     }
+});
+
+// ==================== GET PLANS ====================
+router.get('/plans', (req, res) => {
+    res.json({
+        success: true,
+        data: PLANS
+    });
+});
+
+// ==================== GET CREDIT PACKS ====================
+router.get('/credit-packs', (req, res) => {
+    res.json({
+        success: true,
+        data: CREDIT_PACKS
+    });
 });
 
 module.exports = router;

@@ -12,7 +12,7 @@ const tenantSchema = new mongoose.Schema({
     apiKey: {
         type: String,
         required: true,
-        unique: true
+        unique: true  // unique: true already creates index, no need for separate index
     },
     
     // ========= BILLING FIELDS =========
@@ -92,7 +92,8 @@ const tenantSchema = new mongoose.Schema({
 });
 
 // ========= INDEXES =========
-tenantSchema.index({ apiKey: 1 });
+// Note: apiKey index is NOT needed here because unique: true already creates it
+// tenantSchema.index({ apiKey: 1 }); ← REMOVED (duplicate)
 tenantSchema.index({ plan: 1 });
 tenantSchema.index({ subscriptionEndDate: 1 });
 
@@ -142,7 +143,7 @@ tenantSchema.methods.addCredits = async function(amount) {
     return this.messageCredits;
 };
 
-// Upgrade plan (optional - can also be done directly in routes)
+// Upgrade plan
 tenantSchema.methods.upgradePlan = async function(planId, billingPeriod, paymentDetails) {
     const PLAN_CREDITS = {
         free: 100,
