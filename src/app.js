@@ -7,16 +7,32 @@ const app = express();
 
 // ==================== CORS CONFIGURATION ====================
 app.use(cors({
-    origin: [
-        process.env.FRONTEND_URL,
-        'http://localhost:3000',
-        'http://localhost:5173',
-        'https://whatsapp-saas-frontend.vercel.app',  // Tumhara actual frontend URL
-        /\.vercel\.app$/  // Allow ALL vercel.app domains
-    ].filter(Boolean),  // Remove undefined values
+    origin: function(origin, callback) {
+        const allowedOrigins = [
+            process.env.FRONTEND_URL,
+            'https://whatsapp-saas-frontend-one.vercel.app',
+            'http://localhost:3000',
+            'http://localhost:5173'
+        ].filter(Boolean);
+        
+        // Allow requests with no origin (mobile apps, Postman, etc.)
+        if (!origin) {
+            return callback(null, true);
+        }
+        
+        // Allow if origin is in allowedOrigins or ends with .vercel.app
+        if (allowedOrigins.includes(origin) || origin.endsWith('.vercel.app')) {
+            callback(null, true);
+        } else {
+            console.log('❌ CORS blocked origin:', origin);
+            callback(null, true); // ⚠️ Allow anyway during testing - remove in production
+        }
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+    exposedHeaders: ['Content-Range', 'X-Content-Range'],
+    maxAge: 86400 // 24 hours
 }));
 
 // Handle preflight requests
@@ -70,7 +86,11 @@ const connectDB = async () => {
             throw new Error('MONGODB_URI not defined');
         }
 
-        await mongoose.connect(process.env.MONGODB_URI);
+        await mongoose.connect(process.env.MONGODB_URI, {
+            serverSelectionTimeoutMS: 5000,
+            socketTimeoutMS: 45000,
+        });
+        
         isConnected = true;
         console.log('✅ MongoDB Connected');
     } catch (error) {
@@ -139,6 +159,7 @@ console.log('   - GET    /health');
 console.log('   - GET    /api/health');
 console.log('   - POST   /api/auth/login');
 console.log('   - POST   /api/auth/register');
+console.log('   - GET    /api/auth/me');
 console.log('   - GET    /api/billing/subscription');
 
 console.log('\n💡 Razorpay: ' + (process.env.RAZORPAY_KEY_ID ? '✅ Configured' : '⚠️ Not configured'));
