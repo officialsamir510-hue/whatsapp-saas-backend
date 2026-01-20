@@ -5,7 +5,7 @@ const authenticateToken = (req, res, next) => {
         const authHeader = req.headers.authorization;
         const token = authHeader && authHeader.split(' ')[1];
 
-        console.log('🔍 Auth middleware - Token exists:', !!token);
+        console.log('🔍 Auth Check - Token exists:', !!token);
 
         if (!token) {
             return res.status(401).json({
@@ -14,11 +14,12 @@ const authenticateToken = (req, res, next) => {
             });
         }
 
+        // Verify token
         const decoded = jwt.verify(token, process.env.JWT_SECRET);
         
-        // ✅ FIXED: Use 'id' (matches JWT creation)
         console.log('✅ Token verified - User ID:', decoded.id);
 
+        // Set user info in request
         req.user = {
             id: decoded.id,
             userId: decoded.id,
@@ -28,20 +29,21 @@ const authenticateToken = (req, res, next) => {
             isSuperAdmin: decoded.isSuperAdmin || false
         };
 
-        if (!req.user.id) {
-            return res.status(401).json({
-                success: false,
-                message: 'Invalid token'
-            });
-        }
-
         next();
 
     } catch (error) {
         console.error('❌ Auth error:', error.message);
+        
+        if (error.name === 'TokenExpiredError') {
+            return res.status(401).json({
+                success: false,
+                message: 'Token expired'
+            });
+        }
+        
         return res.status(401).json({
             success: false,
-            message: 'Token verification failed'
+            message: 'Invalid token'
         });
     }
 };
