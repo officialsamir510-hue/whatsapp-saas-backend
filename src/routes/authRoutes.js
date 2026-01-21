@@ -3,11 +3,50 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const User = require('../models/User');
-const Tenant = require('../models/Tenant');
-const { authenticateToken } = require('../middleware/auth');
 
-// ==================== HELPER FUNCTIONS ====================
+// ============================================
+// IMPORT MODELS
+// ============================================
+let User, Tenant;
+try {
+    User = require('../models/User');
+    Tenant = require('../models/Tenant');
+    console.log('✅ Models imported in authRoutes');
+} catch (error) {
+    console.error('❌ Models import error:', error.message);
+}
+
+// ============================================
+// IMPORT MIDDLEWARE
+// ============================================
+let authenticateToken;
+try {
+    const auth = require('../middleware/auth');
+    authenticateToken = auth.authenticateToken || auth.protect || auth;
+    console.log('✅ Auth middleware imported');
+} catch (error) {
+    console.error('❌ Auth middleware error:', error.message);
+    // Fallback middleware
+    authenticateToken = async (req, res, next) => {
+        try {
+            const authHeader = req.headers.authorization;
+            if (!authHeader || !authHeader.startsWith('Bearer ')) {
+                return res.status(401).json({ success: false, message: 'No token provided' });
+            }
+            
+            const token = authHeader.split(' ')[1];
+            const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
+            req.user = decoded;
+            next();
+        } catch (error) {
+            return res.status(401).json({ success: false, message: 'Invalid token' });
+        }
+    };
+}
+
+// ============================================
+// HELPER FUNCTIONS
+// ============================================
 const generateToken = (user, tenant) => {
     return jwt.sign(
         {
@@ -17,8 +56,8 @@ const generateToken = (user, tenant) => {
             role: user.role,
             isSuperAdmin: user.isSuperAdmin || false
         },
-        process.env.JWT_SECRET,
-        { expiresIn: '7d' }
+        process.env.JWT_SECRET || 'your-super-secret-jwt-key',
+        { expiresIn: '30d' }
     );
 };
 
@@ -38,12 +77,27 @@ const formatUserResponse = (user, tenant) => {
             company: tenant.company,
             plan: tenant.plan,
             messageCredits: tenant.messageCredits,
-            whatsappConnected: tenant.facebookConnected || false
+            apiKey: tenant.apiKey,
+            whatsappConnected: tenant.facebookConnected || false,
+            whatsappConfig: tenant.whatsappConfig || { isConnected: false }
         } : null
     };
 };
 
-// ==================== REGISTER ====================
+// ============================================
+// TEST ROUTE
+// ============================================
+router.get('/test', (req, res) => {
+    res.json({ 
+        success: true,
+        message: 'Auth routes working!',
+        routes: ['POST /register', 'POST /login', 'GET /me', 'POST /logout']
+    });
+});
+
+// ============================================
+// REGISTER
+// ============================================
 router.post('/register', async (req, res) => {
     try {
         const { name, email, password, company } = req.body;
@@ -83,11 +137,14 @@ router.post('/register', async (req, res) => {
         const tenant = new Tenant({
             name: company || name,
             company: company || name,
-            apiKey: crypto.randomBytes(32).toString('hex'),
+            apiKey: 'wsp_' + crypto.randomBytes(24).toString('hex'),
             plan: 'free',
             messageCredits: 100,
             totalMessagesSent: 0,
-            isActive: true
+            isActive: true,
+            whatsappConfig: {
+                isConnected: false
+            }
         });
 
         const savedTenant = await tenant.save();
@@ -102,7 +159,15 @@ router.post('/register', async (req, res) => {
             tenantId: savedTenant._id,
             role: 'owner',
             isActive: true,
-            isSuperAdmin: false
+            isSuperAdmin: false,
+            plan: 'free',
+            planLimits: {
+                messagesPerMonth: 1000,
+                apiKeysLimit: 2,
+                whatsappAccountsLimit: 1,
+                templatesLimit: 5,
+                contactsLimit: 1000
+            }
         });
 
         const savedUser = await user.save();
@@ -142,7 +207,9 @@ router.post('/register', async (req, res) => {
     }
 });
 
-// ==================== LOGIN ====================
+// ============================================
+// LOGIN
+// ============================================
 router.post('/login', async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -196,7 +263,8 @@ router.post('/login', async (req, res) => {
                 name: 'Super Admin',
                 company: 'System Administrator',
                 plan: 'unlimited',
-                messageCredits: 999999
+                messageCredits: 999999,
+                whatsappConfig: { isConnected: true }
             };
         } else {
             tenant = await Tenant.findById(user.tenantId);
@@ -206,9 +274,10 @@ router.post('/login', async (req, res) => {
                 tenant = new Tenant({
                     name: user.name,
                     company: user.name,
-                    apiKey: crypto.randomBytes(32).toString('hex'),
+                    apiKey: 'wsp_' + crypto.randomBytes(24).toString('hex'),
                     plan: 'free',
-                    messageCredits: 100
+                    messageCredits: 100,
+                    whatsappConfig: { isConnected: false }
                 });
 
                 await tenant.save();
@@ -247,7 +316,9 @@ router.post('/login', async (req, res) => {
     }
 });
 
-// ==================== GET CURRENT USER ====================
+// ============================================
+// GET CURRENT USER
+// ============================================
 router.get('/me', authenticateToken, async (req, res) => {
     try {
         console.log('📡 /auth/me called - User ID:', req.user.id);
@@ -269,7 +340,8 @@ router.get('/me', authenticateToken, async (req, res) => {
                     _id: 'super_admin_tenant',
                     name: 'Super Admin',
                     plan: 'unlimited',
-                    messageCredits: 999999
+                    messageCredits: 999999,
+                    whatsappConfig: { isConnected: true }
                 })
             });
         }
@@ -278,13 +350,14 @@ router.get('/me', authenticateToken, async (req, res) => {
         let tenant = await Tenant.findById(user.tenantId);
 
         if (!tenant) {
-            console.log('⚠️ Tenant not found');
+            console.log('⚠️ Tenant not found, creating...');
             tenant = new Tenant({
                 name: user.name,
                 company: user.name,
-                apiKey: crypto.randomBytes(32).toString('hex'),
+                apiKey: 'wsp_' + crypto.randomBytes(24).toString('hex'),
                 plan: 'free',
-                messageCredits: 100
+                messageCredits: 100,
+                whatsappConfig: { isConnected: false }
             });
 
             await tenant.save();
@@ -308,20 +381,17 @@ router.get('/me', authenticateToken, async (req, res) => {
     }
 });
 
-// ==================== LOGOUT ====================
-router.post('/logout', authenticateToken, (req, res) => {
-    try {
-        console.log('🚪 User logged out:', req.user.email);
-        res.json({
-            success: true,
-            message: 'Logged out successfully'
-        });
-    } catch (error) {
-        res.status(500).json({
-            success: false,
-            message: 'Logout failed'
-        });
-    }
+// ============================================
+// LOGOUT
+// ============================================
+router.post('/logout', (req, res) => {
+    console.log('🚪 Logout request');
+    res.json({
+        success: true,
+        message: 'Logged out successfully'
+    });
 });
+
+console.log('✅ authRoutes.js loaded');
 
 module.exports = router;
