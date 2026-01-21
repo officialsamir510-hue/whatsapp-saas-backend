@@ -1,10 +1,10 @@
-{
+﻿{
   "name": "whatsapp-saas-backend",
   "version": "1.0.0",
   "description": "WhatsApp SaaS API Platform",
   "main": "server.js",
   "engines": {
-    "node": "24.x"
+    "node": "18.x"
   },
   "scripts": {
     "start": "node server.js",
@@ -32,3 +32,4 @@
     "nodemon": "^3.0.2"
   }
 }
+
