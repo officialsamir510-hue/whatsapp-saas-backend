@@ -1,23 +1,24 @@
 const express = require('express');
 const router = express.Router();
-const authenticateToken = require('../middlewares/auth.middleware');
+
+// ✅ CORRECT PATH (same as authRoutes.js)
+const { authenticateToken } = require('../middleware/auth');
+
 const {
     initOAuth,
     handleCallback,
     getAccounts,
-    disconnectAccount
+    disconnectAccount,
+    syncAccount,
+    setDefaultPhone
 } = require('../controllers/whatsappOAuth.controller');
 
-// Init OAuth (protected)
+// Routes
 router.get('/init', authenticateToken, initOAuth);
-
-// Callback (public)
 router.get('/callback', handleCallback);
-
-// Get accounts (protected)
 router.get('/accounts', authenticateToken, getAccounts);
-
-// Disconnect (protected)
 router.delete('/accounts/:wabaId', authenticateToken, disconnectAccount);
+router.post('/accounts/:wabaId/sync', authenticateToken, syncAccount);
+router.put('/accounts/:wabaId/phone/:phoneNumberId/default', authenticateToken, setDefaultPhone);
 
 module.exports = router;
