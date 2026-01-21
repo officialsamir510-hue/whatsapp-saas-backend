@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const mongoose = require('mongoose');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -20,12 +21,11 @@ const allowedOrigins = [
 app.use(cors({
     origin: function(origin, callback) {
         if (!origin) return callback(null, true);
-        
         if (allowedOrigins.indexOf(origin) !== -1 || origin.endsWith('.vercel.app')) {
             callback(null, true);
         } else {
-            console.log('❌ CORS blocked origin:', origin);
-            callback(null, true); // Allow anyway for development
+            console.log('CORS blocked origin:', origin);
+            callback(null, true);
         }
     },
     credentials: true,
@@ -39,10 +39,9 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging
 app.use((req, res, next) => {
     const timestamp = new Date().toISOString().split('T')[1].split('.')[0];
-    console.log(`📥 [${timestamp}] ${req.method} ${req.path}`);
+    console.log('[' + timestamp + '] ' + req.method + ' ' + req.path);
     next();
 });
 
@@ -55,13 +54,12 @@ const connectDB = async () => {
     if (isConnected && mongoose.connection.readyState === 1) {
         return;
     }
-    
     try {
         await mongoose.connect(process.env.MONGODB_URI);
         isConnected = true;
-        console.log('✅ MongoDB Connected');
+        console.log('MongoDB Connected');
     } catch (error) {
-        console.error('❌ MongoDB Connection Error:', error.message);
+        console.error('MongoDB Connection Error:', error.message);
         throw error;
     }
 };
@@ -72,7 +70,7 @@ connectDB().catch(err => console.error('Initial DB connection failed:', err));
 // HEALTH CHECK ROUTES
 // ============================================
 app.get('/', (req, res) => {
-    res.json({ 
+    res.json({
         status: 'ok',
         service: 'WhatsApp SaaS Backend',
         version: '1.0.0',
@@ -82,14 +80,10 @@ app.get('/', (req, res) => {
 });
 
 app.get('/api', (req, res) => {
-    res.json({ 
+    res.json({
         status: 'ok',
         message: 'API is working',
-        endpoints: {
-            health: '/api/health',
-            auth: '/api/auth',
-            routes: '/api/routes'
-        }
+        endpoints: { health: '/api/health', auth: '/api/auth', routes: '/api/routes' }
     });
 });
 
@@ -103,124 +97,152 @@ app.get('/api/health', (req, res) => {
 });
 
 // ============================================
-// LOAD ROUTES
+// LOAD ROUTES - FIXED VERSION
 // ============================================
-console.log('\n📦 Loading routes...');
-console.log('='.repeat(40));
+console.log('Loading routes...');
 
-// Helper function to load routes safely
-const loadRoute = (routePath, mountPath, name) => {
-    const paths = [
-        `./routes/${routePath}`,
-        `./src/routes/${routePath}`
-    ];
-    
-    for (const path of paths) {
-        try {
-            const route = require(path);
-            app.use(mountPath, route);
-            console.log(`✅ ${name.padEnd(25)} → ${mountPath}`);
-            return true;
-        } catch (e) {
-            // Continue to next path
-        }
-    }
-    
-    console.log(`⚠️  ${name.padEnd(25)} → Not found`);
-    
-    // Create placeholder route
-    app.use(mountPath, (req, res) => {
-        res.status(501).json({
-            success: false,
-            message: `${name} not implemented yet`,
-            path: req.path
-        });
-    });
-    
-    return false;
-};
+// Direct imports from src/routes (Vercel compatible)
+try {
+    const authRoutes = require('./src/routes/authRoutes');
+    app.use('/api/auth', authRoutes);
+    console.log('Auth Routes loaded');
+} catch (e) {
+    console.error('Auth Routes error:', e.message);
+}
 
-// Load all routes
-loadRoute('authRoutes', '/api/auth', 'Auth Routes');
-loadRoute('userRoutes', '/api/users', 'User Routes');
-loadRoute('adminRoutes', '/api/admin', 'Admin Routes');
-loadRoute('messageRoutes', '/api/messages', 'Message Routes');
-loadRoute('contactRoutes', '/api/contacts', 'Contact Routes');
-loadRoute('templateRoutes', '/api/templates', 'Template Routes');
-loadRoute('analyticsRoutes', '/api/analytics', 'Analytics Routes');
-loadRoute('settingsRoutes', '/api/settings', 'Settings Routes');
-loadRoute('billingRoutes', '/api/billing', 'Billing Routes');
-loadRoute('webhookRoutes', '/api/webhook', 'Webhook Routes');
-loadRoute('whatsappOAuth.routes', '/api/whatsapp/oauth', 'WhatsApp OAuth Routes');
-loadRoute('apiKey.routes', '/api/keys', 'API Key Routes');
+try {
+    const userRoutes = require('./src/routes/userRoutes');
+    app.use('/api/users', userRoutes);
+    console.log('User Routes loaded');
+} catch (e) {
+    console.error('User Routes error:', e.message);
+}
 
-// Public API v1 Routes (optional)
-loadRoute('publicApi/v1/message.routes', '/api/v1/messages', 'Public API v1');
+try {
+    const adminRoutes = require('./src/routes/adminRoutes');
+    app.use('/api/admin', adminRoutes);
+    console.log('Admin Routes loaded');
+} catch (e) {
+    console.error('Admin Routes error:', e.message);
+}
 
-console.log('='.repeat(40));
-console.log('📦 Routes loading complete\n');
+try {
+    const messageRoutes = require('./src/routes/messageRoutes');
+    app.use('/api/messages', messageRoutes);
+    console.log('Message Routes loaded');
+} catch (e) {
+    console.error('Message Routes error:', e.message);
+}
+
+try {
+    const contactRoutes = require('./src/routes/contactRoutes');
+    app.use('/api/contacts', contactRoutes);
+    console.log('Contact Routes loaded');
+} catch (e) {
+    console.error('Contact Routes error:', e.message);
+}
+
+try {
+    const templateRoutes = require('./src/routes/templateRoutes');
+    app.use('/api/templates', templateRoutes);
+    console.log('Template Routes loaded');
+} catch (e) {
+    console.error('Template Routes error:', e.message);
+}
+
+try {
+    const analyticsRoutes = require('./src/routes/analyticsRoutes');
+    app.use('/api/analytics', analyticsRoutes);
+    console.log('Analytics Routes loaded');
+} catch (e) {
+    console.error('Analytics Routes error:', e.message);
+}
+
+try {
+    const settingsRoutes = require('./src/routes/settingsRoutes');
+    app.use('/api/settings', settingsRoutes);
+    console.log('Settings Routes loaded');
+} catch (e) {
+    console.error('Settings Routes error:', e.message);
+}
+
+try {
+    const billingRoutes = require('./src/routes/billingRoutes');
+    app.use('/api/billing', billingRoutes);
+    console.log('Billing Routes loaded');
+} catch (e) {
+    console.error('Billing Routes error:', e.message);
+}
+
+try {
+    const webhookRoutes = require('./src/routes/webhookRoutes');
+    app.use('/api/webhook', webhookRoutes);
+    console.log('Webhook Routes loaded');
+} catch (e) {
+    console.error('Webhook Routes error:', e.message);
+}
+
+try {
+    const whatsappOAuthRoutes = require('./src/routes/whatsappOAuth.routes');
+    app.use('/api/whatsapp/oauth', whatsappOAuthRoutes);
+    console.log('WhatsApp OAuth Routes loaded');
+} catch (e) {
+    console.error('WhatsApp OAuth Routes error:', e.message);
+}
+
+try {
+    const apiKeyRoutes = require('./src/routes/apiKey.routes');
+    app.use('/api/keys', apiKeyRoutes);
+    console.log('API Key Routes loaded');
+} catch (e) {
+    console.error('API Key Routes error:', e.message);
+}
+
+try {
+    const publicApiRoutes = require('./src/routes/publicApi/v1/message.routes');
+    app.use('/api/v1/messages', publicApiRoutes);
+    console.log('Public API v1 loaded');
+} catch (e) {
+    console.log('Public API v1 not found (optional)');
+}
+
+console.log('Routes loading complete');
 
 // ============================================
-// DEBUG: LIST ALL ROUTES
+// DEBUG ROUTES
 // ============================================
 app.get('/api/routes', (req, res) => {
     const routes = [];
-    
-    // Get routes from express router stack
-    const getRoutes = (stack, basePath = '') => {
+    const getRoutes = (stack, basePath) => {
         stack.forEach((layer) => {
             if (layer.route) {
-                // Direct route
-                const methods = Object.keys(layer.route.methods)
-                    .filter(m => layer.route.methods[m])
-                    .map(m => m.toUpperCase());
-                    
-                routes.push({
-                    path: basePath + layer.route.path,
-                    methods: methods
-                });
+                const methods = Object.keys(layer.route.methods).filter(m => layer.route.methods[m]).map(m => m.toUpperCase());
+                routes.push({ path: basePath + layer.route.path, methods: methods });
             } else if (layer.name === 'router' && layer.handle.stack) {
-                // Nested router
-                let path = '';
+                let layerPath = '';
                 if (layer.regexp) {
-                    // Extract path from regexp
-                    const match = layer.regexp.toString().match(/^\/\^(\\\/[^?]*)/);
-                    if (match) {
-                        path = match[1].replace(/\\\//g, '/').replace(/\(\?:\(\[\^\\\/\]\+\?\)\)/g, ':param');
-                    }
+                    const match = layer.regexp.toString().match(/\\\/([^\\?]*)/);
+                    if (match) layerPath = '/' + match[1].replace(/\\\//g, '/');
                 }
-                getRoutes(layer.handle.stack, path);
+                getRoutes(layer.handle.stack, layerPath);
             }
         });
     };
-    
-    if (app._router && app._router.stack) {
-        getRoutes(app._router.stack);
-    }
-    
-    // Sort routes
+    if (app._router && app._router.stack) getRoutes(app._router.stack, '');
     routes.sort((a, b) => a.path.localeCompare(b.path));
-    
-    res.json({
-        success: true,
-        total: routes.length,
-        routes: routes
-    });
+    res.json({ success: true, total: routes.length, routes: routes });
 });
 
-// ============================================
-// DEBUG: TEST AUTH ROUTES
-// ============================================
 app.get('/api/test/auth', (req, res) => {
     res.json({
         success: true,
         message: 'Auth test endpoint',
         availableRoutes: [
-            { method: 'GET', path: '/api/auth/test', description: 'Test auth routes' },
-            { method: 'POST', path: '/api/auth/register', description: 'Register new user' },
-            { method: 'POST', path: '/api/auth/login', description: 'Login user' },
-            { method: 'GET', path: '/api/auth/me', description: 'Get current user (requires token)' },
-            { method: 'POST', path: '/api/auth/logout', description: 'Logout user' }
+            { method: 'GET', path: '/api/auth/test' },
+            { method: 'POST', path: '/api/auth/register' },
+            { method: 'POST', path: '/api/auth/login' },
+            { method: 'GET', path: '/api/auth/me' },
+            { method: 'POST', path: '/api/auth/logout' }
         ]
     });
 });
@@ -229,10 +251,10 @@ app.get('/api/test/auth', (req, res) => {
 // 404 HANDLER
 // ============================================
 app.use((req, res) => {
-    console.log(`❌ 404: ${req.method} ${req.path}`);
-    res.status(404).json({ 
+    console.log('404: ' + req.method + ' ' + req.path);
+    res.status(404).json({
         success: false,
-        message: `Route not found: ${req.method} ${req.path}`,
+        message: 'Route not found: ' + req.method + ' ' + req.path,
         hint: 'Check /api/routes for available endpoints'
     });
 });
@@ -241,56 +263,26 @@ app.use((req, res) => {
 // ERROR HANDLER
 // ============================================
 app.use((err, req, res, next) => {
-    console.error('💥 Error:', err.message);
-    console.error('Stack:', err.stack);
-    
-    res.status(err.status || 500).json({ 
+    console.error('Error:', err.message);
+    res.status(err.status || 500).json({
         success: false,
-        message: err.message || 'Internal server error',
-        ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+        message: err.message || 'Internal server error'
     });
 });
 
 // ============================================
-// START SERVER
+// START SERVER (Local only)
 // ============================================
-const PORT = process.env.PORT || 5000;
-
-app.listen(PORT, () => {
-    console.log('\n' + '='.repeat(50));
-    console.log('🚀 WhatsApp SaaS Backend');
-    console.log('='.repeat(50));
-    console.log(`📡 Server:    http://localhost:${PORT}`);
-    console.log(`🔌 API:       http://localhost:${PORT}/api`);
-    console.log(`❤️  Health:    http://localhost:${PORT}/api/health`);
-    console.log(`📋 Routes:    http://localhost:${PORT}/api/routes`);
-    console.log(`🔐 Auth Test: http://localhost:${PORT}/api/auth/test`);
-    console.log('='.repeat(50));
-    console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-    console.log(`📊 MongoDB: ${mongoose.connection.readyState === 1 ? '✅ Connected' : '⏳ Connecting...'}`);
-    console.log('='.repeat(50) + '\n');
-});
-
-// ============================================
-// GRACEFUL SHUTDOWN
-// ============================================
-process.on('SIGTERM', () => {
-    console.log('👋 SIGTERM received. Shutting down gracefully...');
-    mongoose.connection.close(false, () => {
-        console.log('📦 MongoDB connection closed.');
-        process.exit(0);
+if (process.env.NODE_ENV !== 'production') {
+    const PORT = process.env.PORT || 5001;
+    app.listen(PORT, () => {
+        console.log('Server running on http://localhost:' + PORT);
+        console.log('Environment: ' + (process.env.NODE_ENV || 'development'));
     });
-});
-
-process.on('SIGINT', () => {
-    console.log('👋 SIGINT received. Shutting down gracefully...');
-    mongoose.connection.close(false, () => {
-        console.log('📦 MongoDB connection closed.');
-        process.exit(0);
-    });
-});
+}
 
 // ============================================
 // EXPORT FOR VERCEL
 // ============================================
 module.exports = app;
+
