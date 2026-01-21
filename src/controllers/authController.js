@@ -4,7 +4,7 @@ const crypto = require('crypto');
 const User = require('../models/User');
 const Tenant = require('../models/Tenant');
 
-console.log('✅ Loading authController.js...');
+console.log('🔄 Loading authController.js...');
 
 // ============================================
 // HELPER FUNCTIONS
@@ -12,10 +12,14 @@ console.log('✅ Loading authController.js...');
 
 // Generate JWT Token
 const generateToken = (user, tenant) => {
+    if (!process.env.JWT_SECRET) {
+        console.warn('⚠️ JWT_SECRET not defined, using default');
+    }
+    
     return jwt.sign(
         {
             id: user._id.toString(),
-            tenantId: tenant._id ? tenant._id.toString() : 'super_admin',
+            tenantId: tenant?._id ? tenant._id.toString() : 'super_admin',
             email: user.email,
             role: user.role,
             isSuperAdmin: user.isSuperAdmin || false
@@ -31,9 +35,13 @@ const formatResponse = (user, tenant) => ({
         id: user._id,
         name: user.name,
         email: user.email,
+        phone: user.phone || null,
         role: user.role,
         isSuperAdmin: user.isSuperAdmin || false,
-        permissions: user.permissions || []
+        isActive: user.isActive,
+        permissions: user.permissions || [],
+        plan: user.plan || 'free',
+        createdAt: user.createdAt
     },
     tenant: tenant ? {
         id: tenant._id,
@@ -42,28 +50,45 @@ const formatResponse = (user, tenant) => ({
         plan: tenant.plan || 'free',
         messageCredits: tenant.messageCredits || 100,
         apiKey: tenant.apiKey,
-        whatsappConfig: tenant.whatsappConfig || { isConnected: false }
+        whatsappConfig: tenant.whatsappConfig || { isConnected: false },
+        whatsappConnected: tenant.whatsappConfig?.isConnected || false
     } : null
 });
 
 // ============================================
-// REGISTER
+// @desc    Register new user
+// @route   POST /api/auth/register
+// @access  Public
 // ============================================
-exports.register = async (req, res) => {
+const register = async (req, res) => {
     try {
-        const { name, email, password, company, companyName } = req.body;
+        const { name, email, password, company, companyName, phone } = req.body;
         
         console.log('📝 Register attempt:', email);
 
         // Validation
         if (!name || !email || !password) {
+            console.log('❌ Missing required fields');
             return res.status(400).json({
                 success: false,
-                message: 'Name, email and password are required'
+                message: 'Name, email and password are required',
+                required: ['name', 'email', 'password']
             });
         }
 
+        // Email validation
+        const emailRegex = /^\S+@\S+\.\S+$/;
+        if (!emailRegex.test(email)) {
+            console.log('❌ Invalid email format');
+            return res.status(400).json({
+                success: false,
+                message: 'Please provide a valid email address'
+            });
+        }
+
+        // Password validation
         if (password.length < 6) {
+            console.log('❌ Password too short');
             return res.status(400).json({
                 success: false,
                 message: 'Password must be at least 6 characters'
@@ -104,9 +129,10 @@ exports.register = async (req, res) => {
         // Create user
         console.log('👤 Creating user...');
         const user = new User({
-            name,
-            email: email.toLowerCase(),
+            name: name.trim(),
+            email: email.toLowerCase().trim(),
             password: hashedPassword,
+            phone: phone || null,
             tenantId: tenant._id,
             role: 'owner',
             isActive: true,
@@ -117,7 +143,13 @@ exports.register = async (req, res) => {
                 apiKeysLimit: 2,
                 whatsappAccountsLimit: 1,
                 templatesLimit: 5,
-                contactsLimit: 1000
+                contactsLimit: 1000,
+                apiCallsPerMinute: 10
+            },
+            currentUsage: {
+                messagesSent: 0,
+                apiCallsMade: 0,
+                lastResetDate: new Date()
             }
         });
         await user.save();
@@ -150,15 +182,18 @@ exports.register = async (req, res) => {
 
         res.status(500).json({
             success: false,
-            message: 'Registration failed: ' + error.message
+            message: 'Registration failed: ' + error.message,
+            ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
         });
     }
 };
 
 // ============================================
-// LOGIN
+// @desc    Login user
+// @route   POST /api/auth/login
+// @access  Public
 // ============================================
-exports.login = async (req, res) => {
+const login = async (req, res) => {
     try {
         const { email, password } = req.body;
 
@@ -166,14 +201,16 @@ exports.login = async (req, res) => {
 
         // Validation
         if (!email || !password) {
+            console.log('❌ Missing email or password');
             return res.status(400).json({
                 success: false,
                 message: 'Email and password are required'
             });
         }
 
-        // Find user
-        const user = await User.findOne({ email: email.toLowerCase() });
+        // Find user with password (since select: false in model)
+        const user = await User.findOne({ email: email.toLowerCase() }).select('+password');
+        
         if (!user) {
             console.log('❌ User not found:', email);
             return res.status(401).json({
@@ -184,14 +221,32 @@ exports.login = async (req, res) => {
 
         // Check if active
         if (!user.isActive) {
+            console.log('❌ Account deactivated:', email);
             return res.status(401).json({
                 success: false,
-                message: 'Account is deactivated'
+                message: 'Account is deactivated. Please contact support.'
             });
         }
 
         // Check password
-        const isMatch = await bcrypt.compare(password, user.password);
+        let isMatch = false;
+        
+        // Try bcrypt compare first
+        try {
+            isMatch = await bcrypt.compare(password, user.password);
+        } catch (e) {
+            console.log('bcrypt compare failed, trying matchPassword method');
+        }
+        
+        // If bcrypt failed and user has matchPassword method, try that
+        if (!isMatch && typeof user.matchPassword === 'function') {
+            try {
+                isMatch = await user.matchPassword(password);
+            } catch (e) {
+                console.log('matchPassword also failed');
+            }
+        }
+
         if (!isMatch) {
             console.log('❌ Invalid password for:', email);
             return res.status(401).json({
@@ -211,6 +266,7 @@ exports.login = async (req, res) => {
                 company: 'System Administrator',
                 plan: 'unlimited',
                 messageCredits: 999999,
+                apiKey: 'super_admin_key',
                 whatsappConfig: { isConnected: true }
             };
         } else {
@@ -229,7 +285,6 @@ exports.login = async (req, res) => {
                 });
                 await tenant.save();
                 user.tenantId = tenant._id;
-                await user.save();
             }
         }
 
@@ -255,20 +310,32 @@ exports.login = async (req, res) => {
         console.error('❌ Login error:', error);
         res.status(500).json({
             success: false,
-            message: 'Login failed: ' + error.message
+            message: 'Login failed: ' + error.message,
+            ...(process.env.NODE_ENV === 'development' && { stack: error.stack })
         });
     }
 };
 
 // ============================================
-// GET CURRENT USER
+// @desc    Get current logged in user
+// @route   GET /api/auth/me
+// @access  Private
 // ============================================
-exports.getMe = async (req, res) => {
+const getMe = async (req, res) => {
     try {
-        console.log('📡 GetMe called - User ID:', req.user.id);
+        console.log('📡 GetMe called - User ID:', req.user?.id);
+
+        if (!req.user || !req.user.id) {
+            return res.status(401).json({
+                success: false,
+                message: 'Not authenticated'
+            });
+        }
 
         const user = await User.findById(req.user.id).select('-password');
+        
         if (!user) {
+            console.log('❌ User not found in database');
             return res.status(404).json({
                 success: false,
                 message: 'User not found'
@@ -285,6 +352,7 @@ exports.getMe = async (req, res) => {
                 company: 'System Administrator',
                 plan: 'unlimited',
                 messageCredits: 999999,
+                apiKey: 'super_admin_key',
                 whatsappConfig: { isConnected: true }
             };
         } else {
@@ -298,7 +366,8 @@ exports.getMe = async (req, res) => {
                     company: user.name,
                     apiKey: 'wsp_' + crypto.randomBytes(24).toString('hex'),
                     plan: 'free',
-                    messageCredits: 100
+                    messageCredits: 100,
+                    whatsappConfig: { isConnected: false }
                 });
                 await tenant.save();
                 user.tenantId = tenant._id;
@@ -306,7 +375,7 @@ exports.getMe = async (req, res) => {
             }
         }
 
-        console.log('✅ User data sent');
+        console.log('✅ User data sent:', user.email);
 
         res.json({
             success: true,
@@ -317,15 +386,17 @@ exports.getMe = async (req, res) => {
         console.error('❌ GetMe error:', error);
         res.status(500).json({
             success: false,
-            message: 'Failed to fetch user data'
+            message: 'Failed to fetch user data: ' + error.message
         });
     }
 };
 
 // ============================================
-// LOGOUT
+// @desc    Logout user
+// @route   POST /api/auth/logout
+// @access  Public
 // ============================================
-exports.logout = async (req, res) => {
+const logout = (req, res) => {
     console.log('🚪 Logout');
     res.json({
         success: true,
@@ -333,4 +404,78 @@ exports.logout = async (req, res) => {
     });
 };
 
+// ============================================
+// @desc    Update password
+// @route   PUT /api/auth/password
+// @access  Private
+// ============================================
+const updatePassword = async (req, res) => {
+    try {
+        const { currentPassword, newPassword } = req.body;
+
+        if (!currentPassword || !newPassword) {
+            return res.status(400).json({
+                success: false,
+                message: 'Current password and new password are required'
+            });
+        }
+
+        if (newPassword.length < 6) {
+            return res.status(400).json({
+                success: false,
+                message: 'New password must be at least 6 characters'
+            });
+        }
+
+        const user = await User.findById(req.user.id).select('+password');
+        
+        if (!user) {
+            return res.status(404).json({
+                success: false,
+                message: 'User not found'
+            });
+        }
+
+        // Check current password
+        const isMatch = await bcrypt.compare(currentPassword, user.password);
+        if (!isMatch) {
+            return res.status(401).json({
+                success: false,
+                message: 'Current password is incorrect'
+            });
+        }
+
+        // Hash new password
+        const salt = await bcrypt.genSalt(10);
+        user.password = await bcrypt.hash(newPassword, salt);
+        await user.save();
+
+        console.log('✅ Password updated for:', user.email);
+
+        res.json({
+            success: true,
+            message: 'Password updated successfully'
+        });
+
+    } catch (error) {
+        console.error('❌ Update password error:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to update password'
+        });
+    }
+};
+
 console.log('✅ authController.js loaded');
+console.log('   Methods:', ['register', 'login', 'getMe', 'logout', 'updatePassword']);
+
+// ============================================
+// EXPORTS
+// ============================================
+module.exports = {
+    register,
+    login,
+    getMe,
+    logout,
+    updatePassword
+};

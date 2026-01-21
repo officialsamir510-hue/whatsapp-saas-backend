@@ -16,7 +16,6 @@ const protect = async (req, res, next) => {
             token = req.headers.authorization.split(' ')[1];
         }
 
-        // Check if token exists
         if (!token) {
             console.log('❌ No token provided');
             return res.status(401).json({
@@ -40,7 +39,6 @@ const protect = async (req, res, next) => {
             });
         }
 
-        // Check if user is active
         if (!user.isActive) {
             return res.status(401).json({
                 success: false,
@@ -86,7 +84,7 @@ const protect = async (req, res, next) => {
     }
 };
 
-// Alias for protect (for compatibility)
+// Alias
 const authenticateToken = protect;
 
 // ============================================
@@ -100,12 +98,11 @@ const apiKeyAuth = async (req, res, next) => {
             return res.status(401).json({
                 success: false,
                 error: 'API_KEY_REQUIRED',
-                message: 'API key is required. Include X-API-Key header.'
+                message: 'API key is required'
             });
         }
 
-        // Find tenant by API key
-        const tenant = await Tenant.findOne({ apiKey: apiKey });
+        const tenant = await Tenant.findOne({ apiKey });
 
         if (!tenant) {
             return res.status(401).json({
@@ -119,81 +116,61 @@ const apiKeyAuth = async (req, res, next) => {
             return res.status(403).json({
                 success: false,
                 error: 'ACCOUNT_SUSPENDED',
-                message: 'Account is suspended'
+                message: 'Account suspended'
             });
         }
 
-        // Find user (owner) of the tenant
         const user = await User.findOne({ tenantId: tenant._id, role: 'owner' });
 
-        // Attach to request
         req.tenant = tenant;
         req.apiKeyUser = user;
         req.user = {
             id: user?._id,
             tenantId: tenant._id,
-            plan: user?.plan || tenant.plan || 'free',
+            plan: user?.plan || 'free',
             planLimits: user?.planLimits
         };
-
-        // Update API key usage
-        // You can add rate limiting logic here
 
         next();
     } catch (error) {
         console.error('❌ API Key auth failed:', error);
         res.status(500).json({
             success: false,
-            error: 'AUTH_FAILED',
             message: 'Authentication failed'
         });
     }
 };
 
-// Alias for apiKeyAuth
 const authenticateApiKey = apiKeyAuth;
 
 // ============================================
-// ROLE-BASED ACCESS CONTROL
+// ROLE-BASED ACCESS
 // ============================================
 const authorize = (...roles) => {
     return (req, res, next) => {
         if (!req.user) {
-            return res.status(401).json({
-                success: false,
-                message: 'Not authenticated'
-            });
+            return res.status(401).json({ success: false, message: 'Not authenticated' });
         }
-
         if (!roles.includes(req.user.role)) {
-            return res.status(403).json({
-                success: false,
-                message: `Role '${req.user.role}' is not authorized to access this resource`
-            });
+            return res.status(403).json({ success: false, message: 'Access denied' });
         }
-
         next();
     };
 };
 
-// ============================================
-// SUPER ADMIN ONLY
-// ============================================
+// Admin only
+const admin = (req, res, next) => {
+    if (!req.user || (req.user.role !== 'admin' && req.user.role !== 'owner' && !req.user.isSuperAdmin)) {
+        return res.status(403).json({ success: false, message: 'Admin access required' });
+    }
+    next();
+};
+
+// Super admin only
 const superAdminOnly = (req, res, next) => {
-    if (!req.user) {
-        return res.status(401).json({
-            success: false,
-            message: 'Not authenticated'
-        });
+    if (!req.user?.isSuperAdmin) {
+        return res.status(403).json({ success: false, message: 'Super admin required' });
     }
-
-    if (!req.user.isSuperAdmin) {
-        return res.status(403).json({
-            success: false,
-            message: 'Super admin access required'
-        });
-    }
-
     next();
 };
 
@@ -203,129 +180,82 @@ const superAdminOnly = (req, res, next) => {
 const checkFeature = (feature) => {
     return async (req, res, next) => {
         try {
-            if (!req.user || !req.user.tenantId) {
-                return res.status(401).json({
-                    success: false,
-                    message: 'Not authenticated'
-                });
-            }
-
-            const user = await User.findById(req.user.id);
-            if (!user) {
-                return res.status(404).json({
-                    success: false,
-                    message: 'User not found'
-                });
-            }
-
-            // Check plan limits based on feature
-            const limits = user.planLimits || {};
+            if (!req.user?.id) return next();
             
-            switch (feature) {
-                case 'messages':
-                    if (user.currentUsage?.messagesSent >= limits.messagesPerMonth) {
-                        return res.status(403).json({
-                            success: false,
-                            message: 'Monthly message limit reached',
-                            upgrade: true
-                        });
-                    }
-                    break;
-                    
-                case 'apiKeys':
-                    const ApiKey = require('../models/ApiKey');
-                    const keyCount = await ApiKey.countDocuments({ 
-                        userId: user._id, 
-                        isActive: true 
-                    });
-                    if (keyCount >= limits.apiKeysLimit) {
-                        return res.status(403).json({
-                            success: false,
-                            message: 'API key limit reached',
-                            upgrade: true
-                        });
-                    }
-                    break;
-                    
-                case 'whatsappAccounts':
+            const user = await User.findById(req.user.id);
+            if (!user) return next();
+
+            const limits = user.planLimits || {};
+            const usage = user.currentUsage || {};
+
+            const checks = {
+                messages: () => usage.messagesSent >= limits.messagesPerMonth,
+                apiKeys: async () => {
+                    try {
+                        const ApiKey = require('../models/ApiKey');
+                        const count = await ApiKey.countDocuments({ userId: user._id, isActive: true });
+                        return count >= limits.apiKeysLimit;
+                    } catch { return false; }
+                },
+                whatsappAccounts: async () => {
                     const tenant = await Tenant.findById(user.tenantId);
-                    const accountCount = tenant?.whatsappAccounts?.length || 0;
-                    if (accountCount >= limits.whatsappAccountsLimit) {
-                        return res.status(403).json({
-                            success: false,
-                            message: 'WhatsApp account limit reached',
-                            upgrade: true
-                        });
-                    }
-                    break;
-                    
-                case 'templates':
-                    const Template = require('../models/Template');
-                    const templateCount = await Template.countDocuments({ 
-                        tenantId: user.tenantId 
+                    return (tenant?.whatsappAccounts?.length || 0) >= limits.whatsappAccountsLimit;
+                },
+                templates: async () => {
+                    try {
+                        const Template = require('../models/Template');
+                        const count = await Template.countDocuments({ tenantId: user.tenantId });
+                        return count >= limits.templatesLimit;
+                    } catch { return false; }
+                },
+                contacts: async () => {
+                    try {
+                        const Contact = require('../models/Contact');
+                        const count = await Contact.countDocuments({ tenantId: user.tenantId });
+                        return count >= limits.contactsLimit;
+                    } catch { return false; }
+                }
+            };
+
+            if (checks[feature]) {
+                const limitReached = await checks[feature]();
+                if (limitReached) {
+                    return res.status(403).json({
+                        success: false,
+                        message: `${feature} limit reached`,
+                        upgrade: true
                     });
-                    if (templateCount >= limits.templatesLimit) {
-                        return res.status(403).json({
-                            success: false,
-                            message: 'Template limit reached',
-                            upgrade: true
-                        });
-                    }
-                    break;
-                    
-                case 'contacts':
-                    const Contact = require('../models/Contact');
-                    const contactCount = await Contact.countDocuments({ 
-                        tenantId: user.tenantId 
-                    });
-                    if (contactCount >= limits.contactsLimit) {
-                        return res.status(403).json({
-                            success: false,
-                            message: 'Contact limit reached',
-                            upgrade: true
-                        });
-                    }
-                    break;
+                }
             }
 
             next();
         } catch (error) {
-            console.error('Feature check error:', error);
-            // If model doesn't exist, allow the request
             next();
         }
     };
 };
 
 // ============================================
-// RATE LIMITING (Simple version)
+// RATE LIMITING
 // ============================================
 const rateLimitMap = new Map();
 
 const rateLimit = (maxRequests = 100, windowMs = 60000) => {
     return (req, res, next) => {
-        const key = req.user?.id || req.ip;
+        const key = req.user?.id?.toString() || req.ip;
         const now = Date.now();
-        
-        if (!rateLimitMap.has(key)) {
-            rateLimitMap.set(key, { count: 1, startTime: now });
-            return next();
-        }
         
         const record = rateLimitMap.get(key);
         
-        // Reset if window expired
-        if (now - record.startTime > windowMs) {
+        if (!record || now - record.startTime > windowMs) {
             rateLimitMap.set(key, { count: 1, startTime: now });
             return next();
         }
         
-        // Check limit
         if (record.count >= maxRequests) {
             return res.status(429).json({
                 success: false,
-                error: 'RATE_LIMIT_EXCEEDED',
-                message: 'Too many requests, please try again later'
+                message: 'Too many requests'
             });
         }
         
@@ -335,21 +265,16 @@ const rateLimit = (maxRequests = 100, windowMs = 60000) => {
 };
 
 // ============================================
-// OPTIONAL AUTH (doesn't fail if no token)
+// OPTIONAL AUTH
 // ============================================
 const optionalAuth = async (req, res, next) => {
     try {
-        let token;
-
-        if (req.headers.authorization && req.headers.authorization.startsWith('Bearer')) {
-            token = req.headers.authorization.split(' ')[1];
-        }
-
-        if (token) {
+        const authHeader = req.headers.authorization;
+        if (authHeader?.startsWith('Bearer')) {
+            const token = authHeader.split(' ')[1];
             const decoded = jwt.verify(token, process.env.JWT_SECRET || 'your-secret-key');
             const user = await User.findById(decoded.id);
-            
-            if (user && user.isActive) {
+            if (user?.isActive) {
                 req.user = {
                     id: user._id,
                     email: user.email,
@@ -359,38 +284,21 @@ const optionalAuth = async (req, res, next) => {
                 };
             }
         }
-        
-        next();
-    } catch (error) {
-        // Token invalid, but continue without user
-        next();
-    }
+    } catch {}
+    next();
 };
 
 console.log('✅ Auth middleware loaded');
 
-// ============================================
-// EXPORT ALL MIDDLEWARE
-// ============================================
 module.exports = {
-    // Main auth
     protect,
     authenticateToken,
-    
-    // API Key auth
     apiKeyAuth,
     authenticateApiKey,
-    
-    // Role-based
     authorize,
+    admin,
     superAdminOnly,
-    
-    // Feature checks
     checkFeature,
-    
-    // Rate limiting
     rateLimit,
-    
-    // Optional auth
     optionalAuth
 };
