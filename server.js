@@ -210,3 +210,4 @@ if (process.env.NODE_ENV !== 'production') {
 
 // Export for Vercel
 module.exports = app;
+// Build trigger: 2026-01-21 18:28:36
