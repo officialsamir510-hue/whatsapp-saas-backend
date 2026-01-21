@@ -7,9 +7,10 @@ const User = require('../models/User');
 const META_API_VERSION = 'v21.0';
 const META_API_BASE = `https://graph.facebook.com/${META_API_VERSION}`;
 
+// Temporary state storage (use Redis in production for multi-instance)
 const oauthStates = new Map();
 
-// Cleanup old states
+// Cleanup old states every 10 minutes
 setInterval(() => {
     const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
     for (const [state, data] of oauthStates.entries()) {
@@ -27,6 +28,22 @@ exports.initOAuth = async (req, res) => {
         
         console.log('🔐 OAuth Init - User:', userId);
         
+        // Check user's plan limits
+        const user = await User.findById(userId);
+        const existingCount = await WhatsAppAccount.countDocuments({
+            userId,
+            status: 'active'
+        });
+        
+        if (existingCount >= (user?.planLimits?.whatsappAccountsLimit || 1)) {
+            return res.status(403).json({
+                success: false,
+                message: `You can only connect ${user?.planLimits?.whatsappAccountsLimit || 1} WhatsApp account(s) on your current plan`,
+                upgrade: true
+            });
+        }
+        
+        // Generate CSRF state token
         const state = crypto.randomBytes(32).toString('hex');
         oauthStates.set(state, {
             userId,
@@ -40,10 +57,11 @@ exports.initOAuth = async (req, res) => {
         if (!META_APP_ID || !REDIRECT_URI) {
             return res.status(500).json({
                 success: false,
-                message: 'Meta OAuth not configured'
+                message: 'Meta OAuth not configured. Please contact support.'
             });
         }
         
+        // Build OAuth URL
         const oauthUrl = `https://www.facebook.com/${META_API_VERSION}/dialog/oauth?` +
             `client_id=${META_APP_ID}` +
             `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
@@ -72,23 +90,23 @@ exports.handleCallback = async (req, res) => {
     try {
         const { code, state } = req.query;
         
-        console.log('📞 OAuth Callback');
+        console.log('📞 OAuth Callback received');
         
         if (!code || !state) {
-            throw new Error('Missing code or state');
+            throw new Error('Missing authorization code or state');
         }
         
+        // Verify state token
         const stateData = oauthStates.get(state);
         if (!stateData) {
-            throw new Error('Invalid state');
+            throw new Error('Invalid or expired state token. Please try again.');
         }
         
         oauthStates.delete(state);
-        
         const { userId, tenantId } = stateData;
         
-        // Exchange code for token
-        console.log('🔄 Exchanging code for token...');
+        // Exchange code for access token
+        console.log('🔄 Exchanging authorization code for access token...');
         
         const tokenResponse = await axios.get(`${META_API_BASE}/oauth/access_token`, {
             params: {
@@ -100,9 +118,9 @@ exports.handleCallback = async (req, res) => {
         });
         
         const { access_token } = tokenResponse.data;
-        console.log('✅ Token received');
+        console.log('✅ Access token received');
         
-        // Get WABA
+        // Get user's WhatsApp Business Accounts
         const wabaResponse = await axios.get(`${META_API_BASE}/me/businesses`, {
             headers: { Authorization: `Bearer ${access_token}` },
             params: {
@@ -112,14 +130,14 @@ exports.handleCallback = async (req, res) => {
         
         const businesses = wabaResponse.data.data;
         if (!businesses || businesses.length === 0) {
-            throw new Error('No WhatsApp Business Account found');
+            throw new Error('No WhatsApp Business Account found. Please create one in Meta Business Manager.');
         }
         
         const business = businesses[0];
         const waba = business.owned_whatsapp_business_accounts?.data[0];
         
         if (!waba) {
-            throw new Error('No WABA linked');
+            throw new Error('No WhatsApp Business Account linked to this business.');
         }
         
         console.log('✅ WABA found:', waba.name);
@@ -139,10 +157,10 @@ exports.handleCallback = async (req, res) => {
             status: 'active'
         }));
         
-        console.log(`✅ Found ${phoneNumbers.length} phone(s)`);
+        console.log(`✅ Found ${phoneNumbers.length} phone number(s)`);
         
-        // Save to database
-        await WhatsAppAccount.findOneAndUpdate(
+        // Save/Update WhatsApp Account in database
+        const whatsappAccount = await WhatsAppAccount.findOneAndUpdate(
             { wabaId: waba.id },
             {
                 userId,
@@ -156,9 +174,9 @@ exports.handleCallback = async (req, res) => {
                 currency: waba.currency,
                 status: 'active',
                 lastSyncedAt: new Date(),
-                tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000)
+                tokenExpiresAt: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000) // 60 days
             },
-            { upsert: true }
+            { upsert: true, new: true }
         );
         
         // Update tenant
@@ -173,7 +191,7 @@ exports.handleCallback = async (req, res) => {
             }
         });
         
-        console.log('✅ Account connected');
+        console.log('✅ WhatsApp account connected successfully');
         
         // Subscribe to webhooks
         try {
@@ -182,30 +200,32 @@ exports.handleCallback = async (req, res) => {
                 {},
                 { headers: { Authorization: `Bearer ${access_token}` } }
             );
-            console.log('✅ Webhooks subscribed');
-        } catch (err) {
-            console.error('⚠️ Webhook failed:', err.response?.data);
+            console.log('✅ Webhook subscribed');
+        } catch (webhookError) {
+            console.error('⚠️ Webhook subscription failed:', webhookError.response?.data);
+            // Don't fail the flow, webhook can be configured later
         }
         
-        // Redirect
+        // Redirect to frontend
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-        res.redirect(`${frontendUrl}/dashboard?connected=success`);
+        res.redirect(`${frontendUrl}/whatsapp-connect?connected=success`);
         
     } catch (error) {
-        console.error('❌ Callback Error:', error.response?.data || error.message);
+        console.error('❌ OAuth Callback Error:', error.response?.data || error.message);
         
         const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:5173';
-        res.redirect(`${frontendUrl}/dashboard?connected=error&message=${encodeURIComponent(error.message)}`);
+        const errorMessage = encodeURIComponent(error.message || 'OAuth failed');
+        res.redirect(`${frontendUrl}/whatsapp-connect?connected=error&message=${errorMessage}`);
     }
 };
 
-// ==================== GET ACCOUNTS ====================
+// ==================== GET CONNECTED ACCOUNTS ====================
 exports.getAccounts = async (req, res) => {
     try {
         const accounts = await WhatsAppAccount.find({
             userId: req.user.id,
-            status: { $in: ['active', 'suspended'] }
-        }).select('-accessToken');
+            status: { $in: ['active', 'limited'] }
+        }).select('-accessToken'); // Don't expose access token
         
         res.json({
             success: true,
@@ -216,7 +236,8 @@ exports.getAccounts = async (req, res) => {
         console.error('❌ Get Accounts Error:', error);
         res.status(500).json({
             success: false,
-            message: error.message
+            message: 'Failed to fetch WhatsApp accounts',
+            error: error.message
         });
     }
 };
@@ -226,33 +247,46 @@ exports.disconnectAccount = async (req, res) => {
     try {
         const { wabaId } = req.params;
         
-        await WhatsAppAccount.findOneAndUpdate(
+        const account = await WhatsAppAccount.findOneAndUpdate(
             { wabaId, userId: req.user.id },
-            { status: 'disconnected' }
+            { status: 'disconnected' },
+            { new: true }
         );
         
-        await Tenant.findByIdAndUpdate(req.user.tenantId, {
-            facebookConnected: false,
-            whatsappConfig: {
-                accessToken: null,
-                phoneNumberId: null,
-                businessAccountId: null,
-                wabaid: null
-            }
-        });
+        if (!account) {
+            return res.status(404).json({
+                success: false,
+                message: 'WhatsApp account not found'
+            });
+        }
+        
+        // Update tenant if this was the main account
+        const tenant = await Tenant.findById(req.user.tenantId);
+        if (tenant?.whatsappConfig?.wabaid === wabaId) {
+            await Tenant.findByIdAndUpdate(req.user.tenantId, {
+                facebookConnected: false,
+                whatsappConfig: {
+                    accessToken: null,
+                    phoneNumberId: null,
+                    businessAccountId: null,
+                    wabaid: null
+                }
+            });
+        }
         
         console.log('✅ Account disconnected:', wabaId);
         
         res.json({
             success: true,
-            message: 'Account disconnected'
+            message: 'WhatsApp account disconnected successfully'
         });
         
     } catch (error) {
         console.error('❌ Disconnect Error:', error);
         res.status(500).json({
             success: false,
-            message: error.message
+            message: 'Failed to disconnect account',
+            error: error.message
         });
     }
 };
@@ -270,40 +304,45 @@ exports.syncAccount = async (req, res) => {
         if (!account) {
             return res.status(404).json({
                 success: false,
-                message: 'Account not found'
+                message: 'WhatsApp account not found'
             });
         }
         
+        // Fetch latest phone numbers from Meta
         const phoneResponse = await axios.get(
             `${META_API_BASE}/${wabaId}/phone_numbers`,
             { headers: { Authorization: `Bearer ${account.accessToken}` } }
         );
         
-        const phoneNumbers = phoneResponse.data.data.map(phone => ({
-            phoneNumberId: phone.id,
-            displayPhoneNumber: phone.display_phone_number,
-            verifiedName: phone.verified_name,
-            qualityRating: phone.quality_rating || 'UNKNOWN',
-            isDefault: account.phoneNumbers.find(p => p.phoneNumberId === phone.id)?.isDefault || false,
-            status: 'active'
-        }));
+        const phoneNumbers = phoneResponse.data.data.map(phone => {
+            const existing = account.phoneNumbers.find(p => p.phoneNumberId === phone.id);
+            return {
+                phoneNumberId: phone.id,
+                displayPhoneNumber: phone.display_phone_number,
+                verifiedName: phone.verified_name,
+                qualityRating: phone.quality_rating || 'UNKNOWN',
+                isDefault: existing?.isDefault || false,
+                status: 'active'
+            };
+        });
         
         account.phoneNumbers = phoneNumbers;
         account.lastSyncedAt = new Date();
         await account.save();
         
-        console.log('✅ Account synced');
+        console.log('✅ Account synced:', wabaId);
         
         res.json({
             success: true,
-            message: 'Account synced'
+            message: 'Account synced successfully'
         });
         
     } catch (error) {
         console.error('❌ Sync Error:', error);
         res.status(500).json({
             success: false,
-            message: error.message
+            message: 'Failed to sync account',
+            error: error.message
         });
     }
 };
@@ -321,31 +360,30 @@ exports.setDefaultPhone = async (req, res) => {
         if (!account) {
             return res.status(404).json({
                 success: false,
-                message: 'Account not found'
+                message: 'WhatsApp account not found'
             });
         }
         
+        // Set all to false, then set selected to true
         account.phoneNumbers.forEach(phone => {
             phone.isDefault = phone.phoneNumberId === phoneNumberId;
         });
         
         await account.save();
         
-        console.log('✅ Default phone updated');
+        console.log('✅ Default phone updated:', phoneNumberId);
         
         res.json({
             success: true,
-            message: 'Default phone updated'
+            message: 'Default phone number updated successfully'
         });
         
     } catch (error) {
-        console.error('❌ Set Default Error:', error);
+        console.error('❌ Set Default Phone Error:', error);
         res.status(500).json({
             success: false,
-            message: error.message
+            message: 'Failed to update default phone',
+            error: error.message
         });
     }
 };
-
-// ✅ NO module.exports AT THE END!
-// ✅ Already using exports.functionName above
